@@ -1,76 +1,64 @@
 <?php
-// app/Http/Controllers/SupportBubbleController.php
 
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Mail;
-use Illuminate\Support\Facades\Log;
 use App\Models\SupportMessage;
+use Illuminate\Support\Facades\Mail;
 
 class SupportBubbleController extends Controller
 {
     public function submit(Request $request)
     {
-        $validated = $request->validate([
-            'name' => 'required|string|max:100',
-            'email' => 'required|email|max:100',
-            'subject' => 'required|string|max:200',
-            'message' => 'required|string|min:5|max:5000',
+        $request->validate([
+            'name' => 'required|string|max:255',
+            'email' => 'required|email|max:255',
+            'subject' => 'required|string|max:255',
+            'message' => 'required|string',
+            'category' => 'required|in:Bug,Billing,Inquiry',
+            'attachment' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048'
         ]);
 
-        try {
-            // Save to database
-            $message = SupportMessage::create([
-                'name' => $validated['name'],
-                'email' => $validated['email'],
-                'subject' => $validated['subject'],
-                'message' => $validated['message'],
-                'status' => 'Pending'
-            ]);
-
-            // Send email notification
-            $this->sendEmailNotification($validated);
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Message sent successfully! We will get back to you soon.',
-                'ticket_id' => $message->id
-            ], 200);
-
-        } catch (\Exception $e) {
-            Log::error('Support message error: ' . $e->getMessage());
-
-            return response()->json([
-                'success' => false,
-                'message' => 'Something went wrong. Please try again later.'
-            ], 500);
+        $attachmentPath = null;
+        if ($request->hasFile('attachment')) {
+            $attachmentPath = $request->file('attachment')->store('support_attachments', 'public');
         }
+
+        $supportMessage = SupportMessage::create([
+            'name' => $request->name,
+            'email' => $request->email,
+            'subject' => $request->subject,
+            'message' => $request->message,
+            'category' => $request->category,
+            'status' => 'Pending',
+            'attachment_path' => $attachmentPath,
+            'is_notified' => false
+        ]);
+
+        Mail::send('emails.support_notification', ['support' => $supportMessage], function ($mail) use ($request, $attachmentPath) {
+            $mail->to('admin@gmail.com')
+                 ->subject('New Support Ticket: ' . $request->subject);
+            
+            if ($attachmentPath) {
+                $mail->attach(storage_path('app/public/' . $attachmentPath));
+            }
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Your support ticket has been submitted successfully.'
+        ]);
     }
 
-    private function sendEmailNotification(array $data)
+    public function getUnreadCount()
     {
-        $adminEmail = config('support-bubble.mail.to');
+        $unreadMessages = SupportMessage::where('is_notified', false)->get();
         
-        if (!$adminEmail || $adminEmail === 'admin@example.com') {
-            return;
+        if ($unreadMessages->count() > 0) {
+            SupportMessage::whereIn('id', $unreadMessages->pluck('id'))->update(['is_notified' => true]);
+            return response()->json(['new_messages' => true, 'count' => $unreadMessages->count()]);
         }
 
-        try {
-            Mail::raw(
-                "New Support Message\n\n" .
-                "Name: {$data['name']}\n" .
-                "Email: {$data['email']}\n" .
-                "Subject: {$data['subject']}\n" .
-                "Message:\n{$data['message']}\n\n" .
-                "Please check the admin dashboard to resolve this ticket.",
-                function ($mail) use ($adminEmail) {
-                    $mail->to($adminEmail)
-                         ->subject('[Support] ' . substr($data['subject'], 0, 50));
-                }
-            );
-        } catch (\Exception $e) {
-            Log::warning('Failed to send email notification: ' . $e->getMessage());
-        }
+        return response()->json(['new_messages' => false, 'count' => 0]);
     }
 }
